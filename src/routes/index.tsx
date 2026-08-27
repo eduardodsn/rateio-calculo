@@ -77,7 +77,8 @@ function uid() {
 function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
   const units: string[] = [];
   for (let floor = 1; floor <= 6; floor++) {
-    for (let unit = 1; unit <= 4; unit++) {
+    const maxUnit = floor === 6 ? 3 : 4;
+    for (let unit = 1; unit <= maxUnit; unit++) {
       units.push(`${floor}0${unit}`);
     }
   }
