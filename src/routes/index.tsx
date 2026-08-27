@@ -1,5 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+
+import {
+  deleteHistorico,
+  fetchHistorico,
+  fetchState,
+  saveHistorico,
+  saveState,
+  type Column,
+  type HistoricoEntry,
+  type Row,
+} from "@/lib/rateio-api";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -21,20 +33,6 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-type Row = {
-  id: string;
-  unidade: string;
-  leituraAnterior: string;
-  leituraAtual: string;
-  taxaCondominio: string;
-  na: boolean;
-};
-
-type Column = {
-  id: string;
-  label: string;
-};
-
 const initialColumns: Column[] = [
   { id: "unidade", label: "Unidade" },
   { id: "leituraAnterior", label: "Leitura anterior" },
@@ -48,56 +46,6 @@ const initialColumns: Column[] = [
 const DEFAULT_VALOR_CONTA = "R$ 1.683,44";
 const DEFAULT_TAXA_CONDOMINIO = "R$ 30,00";
 const DEFAULT_TAXA_FIXA = "R$ 244,02";
-
-const STORAGE_KEY = "qe40-rateio:state:v1";
-const BACKUP_KEY = "qe40-rateio:backup:v1";
-const DEFAULTS_KEY = "qe40-rateio:defaults:v1";
-
-type StoredState = {
-  columns: Column[];
-  valorConta: string;
-  taxaCondominioGlobal: string;
-  taxaFixa: string;
-  mesReferencia: string;
-  rows: Row[];
-};
-
-type ReadingsBackup = {
-  savedAt: string;
-  mesReferencia: string;
-  rows: Pick<Row, "id" | "leituraAnterior" | "leituraAtual" | "na">[];
-};
-
-type SavedDefaults = {
-  valorConta: string;
-  taxaCondominioGlobal: string;
-  taxaFixa: string;
-};
-
-function loadFromStorage<T>(key: string): T | null {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveToStorage(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Ignora falhas de escrita (modo privado, cota excedida, etc.)
-  }
-}
-
-function removeFromStorage(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    // Ignora
-  }
-}
 
 function parseMoney(value: string): number {
   if (!value || value.trim().toUpperCase() === "N/A") return 0;
@@ -211,62 +159,69 @@ function Index() {
   // hidratação; o mês atual real é aplicado depois, só no cliente.
   const [mesReferencia, setMesReferencia] = useState<string>("");
   const [rows, setRows] = useState<Row[]>(() => generateDefaultRows(DEFAULT_TAXA_CONDOMINIO));
-  const [backup, setBackup] = useState<ReadingsBackup | null>(null);
+  const [backup, setBackup] = useState<HistoricoEntry | null>(null);
   const hydratedRef = useRef(false);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Carrega o estado salvo no navegador (uma única vez, após a primeira renderização,
+  // Carrega o estado salvo no Supabase (uma única vez, após a primeira renderização,
   // para não gerar divergência entre o HTML do servidor e o do cliente).
   useEffect(() => {
-    // Os padrões salvos (via botão "Criar imagem") entram primeiro; o estado
-    // completo, salvo a cada alteração, sobrescreve com os valores mais recentes.
-    const savedDefaults = loadFromStorage<SavedDefaults>(DEFAULTS_KEY);
-    if (savedDefaults) {
-      if (typeof savedDefaults.valorConta === "string") setValorConta(savedDefaults.valorConta);
-      if (typeof savedDefaults.taxaCondominioGlobal === "string")
-        setTaxaCondominioGlobal(savedDefaults.taxaCondominioGlobal);
-      if (typeof savedDefaults.taxaFixa === "string") setTaxaFixa(savedDefaults.taxaFixa);
-    }
+    let cancelled = false;
 
-    const savedState = loadFromStorage<StoredState>(STORAGE_KEY);
-    if (savedState) {
-      if (Array.isArray(savedState.columns)) setColumns(savedState.columns);
-      if (typeof savedState.valorConta === "string") setValorConta(savedState.valorConta);
-      if (typeof savedState.taxaCondominioGlobal === "string")
-        setTaxaCondominioGlobal(savedState.taxaCondominioGlobal);
-      if (typeof savedState.taxaFixa === "string") setTaxaFixa(savedState.taxaFixa);
-      if (typeof savedState.mesReferencia === "string" && savedState.mesReferencia)
-        setMesReferencia(savedState.mesReferencia);
-      if (Array.isArray(savedState.rows) && savedState.rows.length > 0)
-        setRows(savedState.rows);
-    }
+    (async () => {
+      try {
+        const state = await fetchState();
 
-    // Sem mês salvo: usa o mês atual real (calculado só aqui, no cliente).
-    setMesReferencia((prev) => prev || getCurrentMonthValue());
+        if (cancelled) return;
 
-    const savedBackup = loadFromStorage<ReadingsBackup>(BACKUP_KEY);
-    if (savedBackup) setBackup(savedBackup);
+        const mesAtual = state?.settings.mesReferencia || getCurrentMonthValue();
 
-    hydratedRef.current = true;
+        if (state) {
+          setColumns(state.settings.columns);
+          setValorConta(state.settings.valorConta);
+          setTaxaCondominioGlobal(state.settings.taxaCondominioGlobal);
+          setTaxaFixa(state.settings.taxaFixa);
+          if (state.rows.length > 0) setRows(state.rows);
+        }
+        setMesReferencia(mesAtual);
+
+        // Se existir um histórico arquivado para o mês anterior, é o backup do
+        // último "Avançar mês" ainda não desfeito.
+        const mesAnterior = addMonthsToReferencia(mesAtual, -1);
+        const historico = await fetchHistorico(mesAnterior);
+        if (!cancelled && historico) setBackup(historico);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) toast.error("Não foi possível carregar os dados salvos no Supabase.");
+      } finally {
+        if (!cancelled) hydratedRef.current = true;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Salva automaticamente a cada alteração (depois de já ter carregado o que existia).
+  // Salva automaticamente no Supabase a cada alteração (com um pequeno atraso
+  // para não disparar uma escrita a cada tecla digitada).
   useEffect(() => {
     if (!hydratedRef.current) return;
-    saveToStorage(STORAGE_KEY, {
-      columns,
-      valorConta,
-      taxaCondominioGlobal,
-      taxaFixa,
-      mesReferencia,
-      rows,
-    } satisfies StoredState);
-  }, [columns, valorConta, taxaCondominioGlobal, taxaFixa, mesReferencia, rows]);
 
-  useEffect(() => {
-    if (!hydratedRef.current) return;
-    if (backup) saveToStorage(BACKUP_KEY, backup);
-    else removeFromStorage(BACKUP_KEY);
-  }, [backup]);
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveState({ columns, valorConta, taxaCondominioGlobal, taxaFixa, mesReferencia }, rows).catch(
+        (err) => {
+          console.error(err);
+          toast.error("Falha ao salvar no Supabase. Verifique sua conexão.");
+        }
+      );
+    }, 700);
+
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [columns, valorConta, taxaCondominioGlobal, taxaFixa, mesReferencia, rows]);
 
   const valorContaNum = parseMoney(valorConta);
   const taxaFixaNum = parseMoney(taxaFixa);
@@ -371,23 +326,29 @@ function Index() {
     setRows((prev) => prev.filter((r) => r.id !== id));
   }
 
-  function avancarMes() {
+  async function avancarMes() {
     const confirmado = window.confirm(
-      "Avançar mês vai copiar a Leitura atual para a Leitura anterior em todas as unidades. Deseja continuar?"
+      "Avançar mês vai copiar a Leitura atual para a Leitura anterior em todas as unidades e arquivar as leituras deste mês no histórico. Deseja continuar?"
     );
     if (!confirmado) return;
 
-    setBackup({
+    const mesArquivado = mesReferencia;
+    const entry: HistoricoEntry = {
+      mesReferencia: mesArquivado,
       savedAt: new Date().toISOString(),
-      mesReferencia,
-      rows: rows.map(({ id, leituraAnterior, leituraAtual, na }) => ({
-        id,
-        leituraAnterior,
-        leituraAtual,
-        na,
-      })),
-    });
+      rows,
+      totals,
+    };
 
+    try {
+      await saveHistorico({ mesReferencia: mesArquivado, rows, totals });
+    } catch (err) {
+      console.error(err);
+      toast.error("Não foi possível salvar o histórico no Supabase. Mês não avançado.");
+      return;
+    }
+
+    setBackup(entry);
     setRows((prev) =>
       prev.map((row) => ({
         ...row,
@@ -395,11 +356,20 @@ function Index() {
         leituraAtual: "",
       }))
     );
-    setMesReferencia((prev) => addMonthsToReferencia(prev, 1));
+    setMesReferencia(addMonthsToReferencia(mesArquivado, 1));
   }
 
-  function voltarMes() {
+  async function voltarMes() {
     if (!backup) return;
+
+    try {
+      await deleteHistorico(backup.mesReferencia);
+    } catch (err) {
+      console.error(err);
+      toast.error("Não foi possível desfazer o avanço de mês no Supabase.");
+      return;
+    }
+
     setRows((prev) =>
       prev.map((row) => {
         const saved = backup.rows.find((b) => b.id === row.id);
@@ -539,12 +509,6 @@ function Index() {
     link.href = canvas.toDataURL("image/png");
     link.download = `rateio-qe40-${mesReferencia || new Date().toISOString().slice(0, 7)}.png`;
     link.click();
-
-    saveToStorage(DEFAULTS_KEY, {
-      valorConta,
-      taxaCondominioGlobal,
-      taxaFixa,
-    } satisfies SavedDefaults);
   }
 
   // Atualiza o padrão global de taxa de condomínio e propaga para toda linha
@@ -699,7 +663,7 @@ function Index() {
             </div>
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
-            As leituras e os campos preenchidos são salvos automaticamente neste navegador.
+            As leituras e os campos preenchidos são salvos automaticamente na nuvem (Supabase).
           </p>
 
           <div className="overflow-x-auto">
