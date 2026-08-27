@@ -47,11 +47,7 @@ const initialColumns: Column[] = [
 
 const DEFAULT_VALOR_CONTA = "R$ 1.683,44";
 const DEFAULT_TAXA_CONDOMINIO = "R$ 30,00";
-const DEFAULT_QTD_UNIDADES = "22";
-
-// Taxa fixa cobrada pela CAESB por apartamento (mesmo sem consumo). É um valor
-// definido pela concessionária, não algo que o usuário deva digitar todo mês.
-const TAXA_FIXA_CAESB = "R$ 22,18";
+const DEFAULT_TAXA_FIXA = "R$ 22,18";
 
 const STORAGE_KEY = "qe40-rateio:state:v1";
 const BACKUP_KEY = "qe40-rateio:backup:v1";
@@ -61,7 +57,7 @@ type StoredState = {
   columns: Column[];
   valorConta: string;
   taxaCondominioGlobal: string;
-  qtdUnidadesPagam: string;
+  taxaFixa: string;
   rows: Row[];
 };
 
@@ -73,7 +69,7 @@ type ReadingsBackup = {
 type SavedDefaults = {
   valorConta: string;
   taxaCondominioGlobal: string;
-  qtdUnidadesPagam: string;
+  taxaFixa: string;
 };
 
 function loadFromStorage<T>(key: string): T | null {
@@ -119,6 +115,15 @@ function formatMoney(value: number): string {
   });
 }
 
+// Máscara "centavos primeiro": trata os dígitos digitados como centavos e
+// reformata a cada tecla, no padrão comum de campos de valor em R$.
+function maskCurrencyInput(rawValue: string): string {
+  const digits = rawValue.replace(/\D/g, "");
+  if (!digits) return "";
+  const cents = parseInt(digits, 10);
+  return formatMoney(cents / 100);
+}
+
 function formatNumber(value: number): string {
   return value.toLocaleString("pt-BR", {
     minimumFractionDigits: 0,
@@ -128,6 +133,12 @@ function formatNumber(value: number): string {
 
 function uid() {
   return Math.random().toString(36).slice(2, 9);
+}
+
+// Suporte a colar dois valores de uma vez (ex.: copiados de uma planilha),
+// espalhando para a célula colada e a célula à direita, como no Excel.
+function splitPastedValues(text: string): string[] {
+  return text.split(/\s+/).filter(Boolean);
 }
 
 function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
@@ -157,8 +168,7 @@ function Index() {
   const [taxaCondominioGlobal, setTaxaCondominioGlobal] = useState<string>(
     DEFAULT_TAXA_CONDOMINIO
   );
-  const [qtdUnidadesPagam, setQtdUnidadesPagam] = useState<string>(DEFAULT_QTD_UNIDADES);
-
+  const [taxaFixa, setTaxaFixa] = useState<string>(DEFAULT_TAXA_FIXA);
   const [rows, setRows] = useState<Row[]>(() => generateDefaultRows(DEFAULT_TAXA_CONDOMINIO));
   const [backup, setBackup] = useState<ReadingsBackup | null>(null);
   const hydratedRef = useRef(false);
@@ -173,8 +183,7 @@ function Index() {
       if (typeof savedDefaults.valorConta === "string") setValorConta(savedDefaults.valorConta);
       if (typeof savedDefaults.taxaCondominioGlobal === "string")
         setTaxaCondominioGlobal(savedDefaults.taxaCondominioGlobal);
-      if (typeof savedDefaults.qtdUnidadesPagam === "string")
-        setQtdUnidadesPagam(savedDefaults.qtdUnidadesPagam);
+      if (typeof savedDefaults.taxaFixa === "string") setTaxaFixa(savedDefaults.taxaFixa);
     }
 
     const savedState = loadFromStorage<StoredState>(STORAGE_KEY);
@@ -183,8 +192,7 @@ function Index() {
       if (typeof savedState.valorConta === "string") setValorConta(savedState.valorConta);
       if (typeof savedState.taxaCondominioGlobal === "string")
         setTaxaCondominioGlobal(savedState.taxaCondominioGlobal);
-      if (typeof savedState.qtdUnidadesPagam === "string")
-        setQtdUnidadesPagam(savedState.qtdUnidadesPagam);
+      if (typeof savedState.taxaFixa === "string") setTaxaFixa(savedState.taxaFixa);
       if (Array.isArray(savedState.rows) && savedState.rows.length > 0)
         setRows(savedState.rows);
     }
@@ -202,10 +210,10 @@ function Index() {
       columns,
       valorConta,
       taxaCondominioGlobal,
-      qtdUnidadesPagam,
+      taxaFixa,
       rows,
     } satisfies StoredState);
-  }, [columns, valorConta, taxaCondominioGlobal, qtdUnidadesPagam, rows]);
+  }, [columns, valorConta, taxaCondominioGlobal, taxaFixa, rows]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -214,8 +222,10 @@ function Index() {
   }, [backup]);
 
   const valorContaNum = parseMoney(valorConta);
-  const taxaFixaNum = parseMoney(TAXA_FIXA_CAESB);
-  const qtdUnidadesPagamNum = Math.max(1, parseInt(qtdUnidadesPagam, 10) || 1);
+  const taxaFixaNum = parseMoney(taxaFixa);
+  // Unidades "que pagam" acompanham a tabela: toda unidade que não está
+  // marcada como N/A entra na divisão da taxa fixa.
+  const qtdUnidadesPagamNum = Math.max(1, rows.filter((row) => !row.na).length);
   const taxaIndividual = (taxaFixaNum * 2) / qtdUnidadesPagamNum;
   const contaSemTaxaFixa = valorContaNum - taxaIndividual * qtdUnidadesPagamNum;
 
@@ -472,8 +482,23 @@ function Index() {
     saveToStorage(DEFAULTS_KEY, {
       valorConta,
       taxaCondominioGlobal,
-      qtdUnidadesPagam,
+      taxaFixa,
     } satisfies SavedDefaults);
+  }
+
+  // Atualiza o padrão global de taxa de condomínio e propaga para toda linha
+  // que ainda estava acompanhando o valor antigo (preserva exceções manuais,
+  // como a Loja com "N/A").
+  function handleTaxaCondominioGlobalChange(rawValue: string) {
+    const masked = maskCurrencyInput(rawValue);
+    setRows((prev) =>
+      prev.map((row) =>
+        row.taxaCondominio === taxaCondominioGlobal
+          ? { ...row, taxaCondominio: masked }
+          : row
+      )
+    );
+    setTaxaCondominioGlobal(masked);
   }
 
   function updateColumnLabel(id: string, label: string) {
@@ -494,7 +519,7 @@ function Index() {
           </p>
         </header>
 
-        <section className="grid gap-4 rounded-xl border bg-card p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-3">
+        <section className="grid gap-4 rounded-xl border bg-card p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-1">
             <label htmlFor="valorConta" className="text-sm font-medium">
               Valor da conta
@@ -502,10 +527,10 @@ function Index() {
             <input
               id="valorConta"
               type="text"
-              inputMode="decimal"
+              inputMode="numeric"
               value={valorConta}
-              onChange={(e) => setValorConta(e.target.value)}
-              onBlur={(e) => setValorConta(formatMoney(parseMoney(e.target.value)))}
+              onChange={(e) => setValorConta(maskCurrencyInput(e.target.value))}
+              placeholder="R$ 0,00"
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
             />
           </div>
@@ -516,12 +541,24 @@ function Index() {
             <input
               id="taxaCondominio"
               type="text"
-              inputMode="decimal"
+              inputMode="numeric"
               value={taxaCondominioGlobal}
-              onChange={(e) => setTaxaCondominioGlobal(e.target.value)}
-              onBlur={(e) =>
-                setTaxaCondominioGlobal(formatMoney(parseMoney(e.target.value)))
-              }
+              onChange={(e) => handleTaxaCondominioGlobalChange(e.target.value)}
+              placeholder="R$ 0,00"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
+            />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="taxaFixa" className="text-sm font-medium">
+              Taxa fixa
+            </label>
+            <input
+              id="taxaFixa"
+              type="text"
+              inputMode="numeric"
+              value={taxaFixa}
+              onChange={(e) => setTaxaFixa(maskCurrencyInput(e.target.value))}
+              placeholder="R$ 0,00"
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
             />
           </div>
@@ -531,11 +568,11 @@ function Index() {
             </label>
             <input
               id="qtdUnidades"
-              type="number"
-              min={1}
-              value={qtdUnidadesPagam}
-              onChange={(e) => setQtdUnidadesPagam(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
+              type="text"
+              readOnly
+              value={qtdUnidadesPagamNum}
+              title="Calculado automaticamente: total de unidades que não estão marcadas como N/A"
+              className="w-full cursor-not-allowed rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground outline-none"
             />
           </div>
         </section>
@@ -622,6 +659,17 @@ function Index() {
                         onChange={(e) =>
                           updateRow(row.id, { unidade: e.target.value })
                         }
+                        onPaste={(e) => {
+                          const parts = splitPastedValues(
+                            e.clipboardData.getData("text")
+                          );
+                          if (parts.length < 2) return;
+                          e.preventDefault();
+                          updateRow(row.id, {
+                            unidade: parts[0] ?? "",
+                            leituraAnterior: parts[1] ?? "",
+                          });
+                        }}
                         className="w-full bg-transparent px-2 py-1 outline-none"
                         placeholder="Unidade"
                       />
@@ -634,6 +682,17 @@ function Index() {
                         onChange={(e) =>
                           updateRow(row.id, { leituraAnterior: e.target.value })
                         }
+                        onPaste={(e) => {
+                          const parts = splitPastedValues(
+                            e.clipboardData.getData("text")
+                          );
+                          if (parts.length < 2) return;
+                          e.preventDefault();
+                          updateRow(row.id, {
+                            leituraAnterior: parts[0] ?? "",
+                            leituraAtual: parts[1] ?? "",
+                          });
+                        }}
                         className="w-full bg-transparent px-2 py-1 outline-none"
                         placeholder="0"
                       />
