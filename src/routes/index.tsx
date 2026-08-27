@@ -89,7 +89,7 @@ function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
     unidade,
     leituraAnterior: "",
     leituraAtual: "",
-    taxaCondominio: taxaCondominioGlobal,
+    taxaCondominio: unidade === "Loja" ? "0" : taxaCondominioGlobal,
     na: false,
   }));
 }
