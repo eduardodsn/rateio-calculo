@@ -86,10 +86,10 @@ function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
   return units.map((unidade) => ({
     id: uid(),
     unidade,
-    leituraAnterior: ["602", "603"].includes(unidade) ? "N/A" : "",
-    leituraAtual: ["602", "603"].includes(unidade) ? "N/A" : "",
+    leituraAnterior: "",
+    leituraAtual: "",
     taxaCondominio: taxaCondominioGlobal,
-    na: ["602", "603"].includes(unidade),
+    na: false,
   }));
 }
 
