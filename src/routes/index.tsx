@@ -110,7 +110,6 @@ function Index() {
       const totalPagar = valorAgua + row.taxaCondominioNum;
       return {
         ...row,
-        medido,
         totalMedido,
         valorAgua,
         totalPagar,
