@@ -58,11 +58,13 @@ type StoredState = {
   valorConta: string;
   taxaCondominioGlobal: string;
   taxaFixa: string;
+  mesReferencia: string;
   rows: Row[];
 };
 
 type ReadingsBackup = {
   savedAt: string;
+  mesReferencia: string;
   rows: Pick<Row, "id" | "leituraAnterior" | "leituraAtual" | "na">[];
 };
 
@@ -141,6 +143,42 @@ function splitPastedValues(text: string): string[] {
   return text.split(/\s+/).filter(Boolean);
 }
 
+const MESES_PT = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro",
+];
+
+function getCurrentMonthValue(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMesReferencia(yearMonth: string): string {
+  const [yearStr, monthStr] = yearMonth.split("-");
+  if (!yearStr || !monthStr) return "";
+  const monthName = MESES_PT[Number(monthStr) - 1];
+  return monthName ? `${monthName}/${yearStr}` : "";
+}
+
+function addMonthsToReferencia(yearMonth: string, delta: number): string {
+  const [yearStr, monthStr] = yearMonth.split("-");
+  const now = new Date();
+  const year = Number(yearStr ?? now.getFullYear());
+  const month = Number(monthStr ?? now.getMonth() + 1);
+  const shifted = new Date(year, month - 1 + delta, 1);
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
+}
+
 function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
   const units: string[] = [];
   for (let floor = 1; floor <= 6; floor++) {
@@ -169,6 +207,9 @@ function Index() {
     DEFAULT_TAXA_CONDOMINIO
   );
   const [taxaFixa, setTaxaFixa] = useState<string>(DEFAULT_TAXA_FIXA);
+  // Vazio no primeiro render (servidor e cliente) para não gerar divergência de
+  // hidratação; o mês atual real é aplicado depois, só no cliente.
+  const [mesReferencia, setMesReferencia] = useState<string>("");
   const [rows, setRows] = useState<Row[]>(() => generateDefaultRows(DEFAULT_TAXA_CONDOMINIO));
   const [backup, setBackup] = useState<ReadingsBackup | null>(null);
   const hydratedRef = useRef(false);
@@ -193,9 +234,14 @@ function Index() {
       if (typeof savedState.taxaCondominioGlobal === "string")
         setTaxaCondominioGlobal(savedState.taxaCondominioGlobal);
       if (typeof savedState.taxaFixa === "string") setTaxaFixa(savedState.taxaFixa);
+      if (typeof savedState.mesReferencia === "string" && savedState.mesReferencia)
+        setMesReferencia(savedState.mesReferencia);
       if (Array.isArray(savedState.rows) && savedState.rows.length > 0)
         setRows(savedState.rows);
     }
+
+    // Sem mês salvo: usa o mês atual real (calculado só aqui, no cliente).
+    setMesReferencia((prev) => prev || getCurrentMonthValue());
 
     const savedBackup = loadFromStorage<ReadingsBackup>(BACKUP_KEY);
     if (savedBackup) setBackup(savedBackup);
@@ -211,9 +257,10 @@ function Index() {
       valorConta,
       taxaCondominioGlobal,
       taxaFixa,
+      mesReferencia,
       rows,
     } satisfies StoredState);
-  }, [columns, valorConta, taxaCondominioGlobal, taxaFixa, rows]);
+  }, [columns, valorConta, taxaCondominioGlobal, taxaFixa, mesReferencia, rows]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -332,6 +379,7 @@ function Index() {
 
     setBackup({
       savedAt: new Date().toISOString(),
+      mesReferencia,
       rows: rows.map(({ id, leituraAnterior, leituraAtual, na }) => ({
         id,
         leituraAnterior,
@@ -343,6 +391,7 @@ function Index() {
     setRows((prev) =>
       prev.map((row) => ({ ...row, leituraAnterior: row.leituraAtual }))
     );
+    setMesReferencia((prev) => addMonthsToReferencia(prev, 1));
   }
 
   function voltarMes() {
@@ -359,6 +408,7 @@ function Index() {
         };
       })
     );
+    setMesReferencia(backup.mesReferencia);
     setBackup(null);
   }
 
@@ -407,7 +457,14 @@ function Index() {
       return Math.ceil(max) + padX * 2;
     });
 
-    const width = colWidths.reduce((a, b) => a + b, 0);
+    const titleFont = "bold 18px system-ui, -apple-system, sans-serif";
+    const titulo = mesReferencia
+      ? `Cálculo Rateio Qe 40 — ${formatMesReferencia(mesReferencia)}`
+      : "Cálculo Rateio Qe 40";
+    ctx.font = titleFont;
+    const titleWidth = Math.ceil(ctx.measureText(titulo).width) + padX * 2;
+
+    const width = Math.max(colWidths.reduce((a, b) => a + b, 0), titleWidth);
     const height = titleHeight + rowHeight * (dataRows.length + 2);
     canvas.width = width;
     canvas.height = height;
@@ -416,10 +473,10 @@ function Index() {
     ctx.fillRect(0, 0, width, height);
 
     ctx.fillStyle = "#111827";
-    ctx.font = "bold 18px system-ui, -apple-system, sans-serif";
+    ctx.font = titleFont;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
-    ctx.fillText("Cálculo Rateio Qe 40", padX, titleHeight / 2 + 6);
+    ctx.fillText(titulo, padX, titleHeight / 2 + 6);
 
     const rowStyles = [
       { bg: "#dbeafe", font: headerFont, color: "#1e3a8a" },
@@ -476,7 +533,7 @@ function Index() {
 
     const link = document.createElement("a");
     link.href = canvas.toDataURL("image/png");
-    link.download = `rateio-qe40-${new Date().toISOString().slice(0, 10)}.png`;
+    link.download = `rateio-qe40-${mesReferencia || new Date().toISOString().slice(0, 7)}.png`;
     link.click();
 
     saveToStorage(DEFAULTS_KEY, {
@@ -514,12 +571,29 @@ function Index() {
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
             Cálculo Rateio Qe 40
           </h1>
+          {mesReferencia && (
+            <p className="text-sm font-medium text-primary-foreground/90">
+              {formatMesReferencia(mesReferencia)}
+            </p>
+          )}
           <p className="text-sm text-primary-foreground/80">
             Preencha os dados e os valores são calculados automaticamente.
           </p>
         </header>
 
-        <section className="grid gap-4 rounded-xl border bg-card p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid gap-4 rounded-xl border bg-card p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-5">
+          <div className="space-y-1">
+            <label htmlFor="mesReferencia" className="text-sm font-medium">
+              Mês de referência
+            </label>
+            <input
+              id="mesReferencia"
+              type="month"
+              value={mesReferencia}
+              onChange={(e) => setMesReferencia(e.target.value)}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
+            />
+          </div>
           <div className="space-y-1">
             <label htmlFor="valorConta" className="text-sm font-medium">
               Valor da conta
