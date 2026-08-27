@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -44,6 +44,62 @@ const initialColumns: Column[] = [
   { id: "taxaCondominio", label: "Taxa de condomínio" },
   { id: "totalPagar", label: "Total a pagar" },
 ];
+
+const DEFAULT_VALOR_CONTA = "R$ 1.683,44";
+const DEFAULT_TAXA_CONDOMINIO = "R$ 30,00";
+const DEFAULT_QTD_UNIDADES = "22";
+
+// Taxa fixa cobrada pela CAESB por apartamento (mesmo sem consumo). É um valor
+// definido pela concessionária, não algo que o usuário deva digitar todo mês.
+const TAXA_FIXA_CAESB = "R$ 22,18";
+
+const STORAGE_KEY = "qe40-rateio:state:v1";
+const BACKUP_KEY = "qe40-rateio:backup:v1";
+const DEFAULTS_KEY = "qe40-rateio:defaults:v1";
+
+type StoredState = {
+  columns: Column[];
+  valorConta: string;
+  taxaCondominioGlobal: string;
+  qtdUnidadesPagam: string;
+  rows: Row[];
+};
+
+type ReadingsBackup = {
+  savedAt: string;
+  rows: Pick<Row, "id" | "leituraAnterior" | "leituraAtual" | "na">[];
+};
+
+type SavedDefaults = {
+  valorConta: string;
+  taxaCondominioGlobal: string;
+  qtdUnidadesPagam: string;
+};
+
+function loadFromStorage<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveToStorage(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignora falhas de escrita (modo privado, cota excedida, etc.)
+  }
+}
+
+function removeFromStorage(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Ignora
+  }
+}
 
 function parseMoney(value: string): number {
   if (!value || value.trim().toUpperCase() === "N/A") return 0;
@@ -97,15 +153,68 @@ function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
 function Index() {
   const [columns, setColumns] = useState<Column[]>(initialColumns);
 
-  const [valorConta, setValorConta] = useState<string>("R$ 1.683,44");
-  const [taxaCondominioGlobal, setTaxaCondominioGlobal] = useState<string>("R$ 30,00");
-  const [taxaFixa, setTaxaFixa] = useState<string>("R$ 22,18");
-  const [qtdUnidadesPagam, setQtdUnidadesPagam] = useState<string>("22");
+  const [valorConta, setValorConta] = useState<string>(DEFAULT_VALOR_CONTA);
+  const [taxaCondominioGlobal, setTaxaCondominioGlobal] = useState<string>(
+    DEFAULT_TAXA_CONDOMINIO
+  );
+  const [qtdUnidadesPagam, setQtdUnidadesPagam] = useState<string>(DEFAULT_QTD_UNIDADES);
 
-  const [rows, setRows] = useState<Row[]>(() => generateDefaultRows(taxaCondominioGlobal));
+  const [rows, setRows] = useState<Row[]>(() => generateDefaultRows(DEFAULT_TAXA_CONDOMINIO));
+  const [backup, setBackup] = useState<ReadingsBackup | null>(null);
+  const hydratedRef = useRef(false);
+
+  // Carrega o estado salvo no navegador (uma única vez, após a primeira renderização,
+  // para não gerar divergência entre o HTML do servidor e o do cliente).
+  useEffect(() => {
+    // Os padrões salvos (via botão "Criar imagem") entram primeiro; o estado
+    // completo, salvo a cada alteração, sobrescreve com os valores mais recentes.
+    const savedDefaults = loadFromStorage<SavedDefaults>(DEFAULTS_KEY);
+    if (savedDefaults) {
+      if (typeof savedDefaults.valorConta === "string") setValorConta(savedDefaults.valorConta);
+      if (typeof savedDefaults.taxaCondominioGlobal === "string")
+        setTaxaCondominioGlobal(savedDefaults.taxaCondominioGlobal);
+      if (typeof savedDefaults.qtdUnidadesPagam === "string")
+        setQtdUnidadesPagam(savedDefaults.qtdUnidadesPagam);
+    }
+
+    const savedState = loadFromStorage<StoredState>(STORAGE_KEY);
+    if (savedState) {
+      if (Array.isArray(savedState.columns)) setColumns(savedState.columns);
+      if (typeof savedState.valorConta === "string") setValorConta(savedState.valorConta);
+      if (typeof savedState.taxaCondominioGlobal === "string")
+        setTaxaCondominioGlobal(savedState.taxaCondominioGlobal);
+      if (typeof savedState.qtdUnidadesPagam === "string")
+        setQtdUnidadesPagam(savedState.qtdUnidadesPagam);
+      if (Array.isArray(savedState.rows) && savedState.rows.length > 0)
+        setRows(savedState.rows);
+    }
+
+    const savedBackup = loadFromStorage<ReadingsBackup>(BACKUP_KEY);
+    if (savedBackup) setBackup(savedBackup);
+
+    hydratedRef.current = true;
+  }, []);
+
+  // Salva automaticamente a cada alteração (depois de já ter carregado o que existia).
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    saveToStorage(STORAGE_KEY, {
+      columns,
+      valorConta,
+      taxaCondominioGlobal,
+      qtdUnidadesPagam,
+      rows,
+    } satisfies StoredState);
+  }, [columns, valorConta, taxaCondominioGlobal, qtdUnidadesPagam, rows]);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    if (backup) saveToStorage(BACKUP_KEY, backup);
+    else removeFromStorage(BACKUP_KEY);
+  }, [backup]);
 
   const valorContaNum = parseMoney(valorConta);
-  const taxaFixaNum = parseMoney(taxaFixa);
+  const taxaFixaNum = parseMoney(TAXA_FIXA_CAESB);
   const qtdUnidadesPagamNum = Math.max(1, parseInt(qtdUnidadesPagam, 10) || 1);
   const taxaIndividual = (taxaFixaNum * 2) / qtdUnidadesPagamNum;
   const contaSemTaxaFixa = valorContaNum - taxaIndividual * qtdUnidadesPagamNum;
@@ -205,6 +314,168 @@ function Index() {
     setRows((prev) => prev.filter((r) => r.id !== id));
   }
 
+  function avancarMes() {
+    const confirmado = window.confirm(
+      "Avançar mês vai copiar a Leitura atual para a Leitura anterior em todas as unidades. Deseja continuar?"
+    );
+    if (!confirmado) return;
+
+    setBackup({
+      savedAt: new Date().toISOString(),
+      rows: rows.map(({ id, leituraAnterior, leituraAtual, na }) => ({
+        id,
+        leituraAnterior,
+        leituraAtual,
+        na,
+      })),
+    });
+
+    setRows((prev) =>
+      prev.map((row) => ({ ...row, leituraAnterior: row.leituraAtual }))
+    );
+  }
+
+  function voltarMes() {
+    if (!backup) return;
+    setRows((prev) =>
+      prev.map((row) => {
+        const saved = backup.rows.find((b) => b.id === row.id);
+        if (!saved) return row;
+        return {
+          ...row,
+          leituraAnterior: saved.leituraAnterior,
+          leituraAtual: saved.leituraAtual,
+          na: saved.na,
+        };
+      })
+    );
+    setBackup(null);
+  }
+
+  function criarImagemTabela() {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const headers = columns.map((col) => col.label);
+    const alignRight = [false, false, false, true, true, true, true];
+
+    const dataRows = computedRows.map((row) => [
+      row.unidade,
+      row.leituraAnterior,
+      row.leituraAtual,
+      row.na ? "N/A" : formatNumber(row.medido),
+      row.na ? "N/A" : formatMoney(row.valorAgua),
+      row.taxaCondominio,
+      formatMoney(row.totalPagar),
+    ]);
+
+    const totalRow = [
+      "TOTAL",
+      "",
+      "",
+      formatNumber(totals.totalMedido),
+      formatMoney(totals.totalValorAgua),
+      formatMoney(totals.totalTaxaCondominio),
+      formatMoney(totals.totalGeral),
+    ];
+
+    const allRows = [headers, ...dataRows, totalRow];
+
+    const padX = 14;
+    const rowHeight = 32;
+    const titleHeight = 48;
+    const headerFont = "bold 13px system-ui, -apple-system, sans-serif";
+    const cellFont = "13px system-ui, -apple-system, sans-serif";
+
+    ctx.font = headerFont;
+    const colWidths = headers.map((_, colIndex) => {
+      let max = 0;
+      for (const row of allRows) {
+        max = Math.max(max, ctx.measureText(row[colIndex] ?? "").width);
+      }
+      return Math.ceil(max) + padX * 2;
+    });
+
+    const width = colWidths.reduce((a, b) => a + b, 0);
+    const height = titleHeight + rowHeight * (dataRows.length + 2);
+    canvas.width = width;
+    canvas.height = height;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 18px system-ui, -apple-system, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillText("Cálculo Rateio Qe 40", padX, titleHeight / 2 + 6);
+
+    const rowStyles = [
+      { bg: "#dbeafe", font: headerFont, color: "#1e3a8a" },
+      ...dataRows.map(() => ({ bg: "#ffffff", font: cellFont, color: "#111827" })),
+      { bg: "#bfdbfe", font: headerFont, color: "#1e3a8a" },
+    ];
+
+    let y = titleHeight;
+    allRows.forEach((row, rowIndex) => {
+      const style = rowStyles[rowIndex];
+      if (!style) return;
+
+      ctx.fillStyle = style.bg;
+      ctx.fillRect(0, y, width, rowHeight);
+
+      let x = 0;
+      row.forEach((value, colIndex) => {
+        const colWidth = colWidths[colIndex] ?? 0;
+        ctx.font = style.font;
+        ctx.fillStyle = style.color;
+        ctx.textBaseline = "middle";
+        if (alignRight[colIndex]) {
+          ctx.textAlign = "right";
+          ctx.fillText(value, x + colWidth - padX, y + rowHeight / 2);
+        } else {
+          ctx.textAlign = "left";
+          ctx.fillText(value, x + padX, y + rowHeight / 2);
+        }
+        x += colWidth;
+      });
+
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.beginPath();
+      ctx.moveTo(0, y + rowHeight);
+      ctx.lineTo(width, y + rowHeight);
+      ctx.stroke();
+
+      y += rowHeight;
+    });
+
+    let x = 0;
+    ctx.strokeStyle = "#e2e8f0";
+    for (const colWidth of colWidths) {
+      ctx.beginPath();
+      ctx.moveTo(x, titleHeight);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      x += colWidth;
+    }
+    ctx.beginPath();
+    ctx.moveTo(width, titleHeight);
+    ctx.lineTo(width, height);
+    ctx.stroke();
+
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `rateio-qe40-${new Date().toISOString().slice(0, 10)}.png`;
+    link.click();
+
+    saveToStorage(DEFAULTS_KEY, {
+      valorConta,
+      taxaCondominioGlobal,
+      qtdUnidadesPagam,
+    } satisfies SavedDefaults);
+  }
+
   function updateColumnLabel(id: string, label: string) {
     setColumns((prev) =>
       prev.map((col) => (col.id === id ? { ...col, label } : col))
@@ -214,16 +485,16 @@ function Index() {
   return (
     <div className="min-h-screen bg-background p-4 text-foreground md:p-8">
       <div className="mx-auto max-w-6xl space-y-6">
-        <header className="space-y-1 text-center">
+        <header className="space-y-1 rounded-xl bg-gradient-to-r from-primary to-sky-500 px-6 py-8 text-center text-primary-foreground shadow-sm">
           <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
             Cálculo Rateio Qe 40
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-primary-foreground/80">
             Preencha os dados e os valores são calculados automaticamente.
           </p>
         </header>
 
-        <section className="grid gap-4 rounded-xl border bg-card p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid gap-4 rounded-xl border bg-card p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-3">
           <div className="space-y-1">
             <label htmlFor="valorConta" className="text-sm font-medium">
               Valor da conta
@@ -255,20 +526,6 @@ function Index() {
             />
           </div>
           <div className="space-y-1">
-            <label htmlFor="taxaFixa" className="text-sm font-medium">
-              Taxa fixa
-            </label>
-            <input
-              id="taxaFixa"
-              type="text"
-              inputMode="decimal"
-              value={taxaFixa}
-              onChange={(e) => setTaxaFixa(e.target.value)}
-              onBlur={(e) => setTaxaFixa(formatMoney(parseMoney(e.target.value)))}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
-            />
-          </div>
-          <div className="space-y-1">
             <label htmlFor="qtdUnidades" className="text-sm font-medium">
               Quantidade de unidades que pagam
             </label>
@@ -284,21 +541,55 @@ function Index() {
         </section>
 
         <section className="rounded-xl border bg-card p-4 shadow-sm">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-semibold">Unidades</h2>
-            <button
-              type="button"
-              onClick={addRow}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              + Adicionar unidade
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={voltarMes}
+                disabled={!backup}
+                title={
+                  backup
+                    ? `Desfazer o avanço de mês de ${new Date(backup.savedAt).toLocaleString("pt-BR")}`
+                    : "Nenhum avanço de mês para desfazer"
+                }
+                className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background"
+              >
+                ↺ Voltar mês
+              </button>
+              <button
+                type="button"
+                onClick={avancarMes}
+                title="Copia a Leitura atual de cada unidade para a Leitura anterior"
+                className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+              >
+                Avançar mês →
+              </button>
+              <button
+                type="button"
+                onClick={addRow}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                + Adicionar unidade
+              </button>
+              <button
+                type="button"
+                onClick={criarImagemTabela}
+                title="Baixa uma imagem PNG da tabela com os dados preenchidos"
+                className="inline-flex items-center gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-800 transition-colors hover:bg-emerald-100"
+              >
+                Criar imagem ⬇
+              </button>
+            </div>
           </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            As leituras e os campos preenchidos são salvos automaticamente neste navegador.
+          </p>
 
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
-                <tr className="bg-muted/50">
+                <tr className="bg-primary/10">
                   {columns.map((col) => (
                     <th
                       key={col.id}
@@ -409,7 +700,7 @@ function Index() {
                     </td>
                   </tr>
                 )}
-                <tr className="bg-muted/50 font-semibold">
+                <tr className="bg-primary/15 font-semibold">
                   <td className="border px-2 py-2">TOTAL</td>
                   <td className="border px-2 py-2"></td>
                   <td className="border px-2 py-2"></td>
@@ -435,10 +726,17 @@ function Index() {
         <section className="grid gap-4 md:grid-cols-2">
           <div className="rounded-xl border bg-card p-4 shadow-sm">
             <h3 className="mb-2 text-base font-semibold">Legenda dos relógios</h3>
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              <li>sem rótulo → 302</li>
-              <li>invertido sem rótulo → 601</li>
-              <li>loja → 01</li>
+            <ul className="space-y-1.5 text-sm text-muted-foreground">
+              <li className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> sem rótulo → 302
+              </li>
+              <li className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-violet-500" /> invertido sem
+                rótulo → 601
+              </li>
+              <li className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> loja → 01
+              </li>
             </ul>
           </div>
 
@@ -457,9 +755,9 @@ function Index() {
                   {formatMoney(contaSemTaxaFixa)}
                 </span>
               </div>
-              <div className="flex justify-between border-t pt-1">
-                <span className="font-semibold">CONTA DE ÁGUA</span>
-                <span className="font-bold tabular-nums">
+              <div className="mt-2 flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                <span className="font-semibold text-emerald-900">CONTA DE ÁGUA</span>
+                <span className="font-bold tabular-nums text-emerald-700">
                   {formatMoney(totals.totalValorAgua)}
                 </span>
               </div>
