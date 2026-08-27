@@ -403,7 +403,7 @@ function Index() {
                       colSpan={columns.length + 1}
                       className="border px-4 py-8 text-center text-muted-foreground"
                     >
-                      Nenhuma unidade adicionada. Clique em "Adicionar linha"
+                      Nenhuma unidade adicionada. Clique em "Adicionar unidade"
                       para começar.
                     </td>
                   </tr>
