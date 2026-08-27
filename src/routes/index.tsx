@@ -27,6 +27,7 @@ type Row = {
   leituraAnterior: string;
   leituraAtual: string;
   taxaCondominio: string;
+  na: boolean;
 };
 
 type Column = {
@@ -45,6 +46,7 @@ const initialColumns: Column[] = [
 ];
 
 function parseMoney(value: string): number {
+  if (!value || value.trim().toUpperCase() === "N/A") return 0;
   const cleaned = value
     .replace(/R\$/g, "")
     .replace(/\./g, "")
@@ -72,14 +74,35 @@ function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
 
+function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
+  const units: string[] = [];
+  for (let floor = 1; floor <= 6; floor++) {
+    const maxUnit = floor === 6 ? 3 : 4;
+    for (let unit = 1; unit <= maxUnit; unit++) {
+      units.push(`${floor}0${unit}`);
+    }
+  }
+  units.push("Loja");
+
+  return units.map((unidade) => ({
+    id: uid(),
+    unidade,
+    leituraAnterior: "",
+    leituraAtual: "",
+    taxaCondominio: taxaCondominioGlobal,
+    na: false,
+  }));
+}
+
 function Index() {
   const [columns, setColumns] = useState<Column[]>(initialColumns);
-  const [rows, setRows] = useState<Row[]>([]);
 
   const [valorConta, setValorConta] = useState<string>("R$ 1.683,44");
   const [taxaCondominioGlobal, setTaxaCondominioGlobal] = useState<string>("R$ 30,00");
   const [taxaFixa, setTaxaFixa] = useState<string>("R$ 22,18");
-  const [qtdUnidadesPagam, setQtdUnidadesPagam] = useState<string>("23");
+  const [qtdUnidadesPagam, setQtdUnidadesPagam] = useState<string>("22");
+
+  const [rows, setRows] = useState<Row[]>(() => generateDefaultRows(taxaCondominioGlobal));
 
   const valorContaNum = parseMoney(valorConta);
   const taxaFixaNum = parseMoney(taxaFixa);
@@ -88,25 +111,38 @@ function Index() {
   const contaSemTaxaFixa = valorContaNum - taxaIndividual * qtdUnidadesPagamNum;
 
   const computedRows = useMemo(() => {
-    const parsed = rows.map((row) => ({
-      ...row,
-      leituraAnteriorNum: parseFloat(row.leituraAnterior.replace(/,/g, ".")) || 0,
-      leituraAtualNum: parseFloat(row.leituraAtual.replace(/,/g, ".")) || 0,
-      taxaCondominioNum: parseMoney(row.taxaCondominio || taxaCondominioGlobal),
-    }));
+    const parsed = rows.map((row) => {
+      const isNa = row.na;
+      return {
+        ...row,
+        leituraAnteriorNum: isNa
+          ? 0
+          : parseFloat(row.leituraAnterior.replace(/,/g, ".")) || 0,
+        leituraAtualNum: isNa
+          ? 0
+          : parseFloat(row.leituraAtual.replace(/,/g, ".")) || 0,
+        taxaCondominioNum: parseMoney(row.taxaCondominio || taxaCondominioGlobal),
+      };
+    });
 
     const withMedido = parsed.map((row) => ({
       ...row,
-      medido: row.leituraAtualNum - row.leituraAnteriorNum,
+      medido: row.na ? 0 : row.leituraAtualNum - row.leituraAnteriorNum,
     }));
 
-    const totalMedido = withMedido.reduce((sum, row) => sum + row.medido, 0);
+    const totalMedido = withMedido.reduce(
+      (sum, row) => sum + (row.na ? 0 : row.medido),
+      0
+    );
 
     return withMedido.map((row) => {
-      const valorAgua =
-        totalMedido > 0
-          ? (row.medido * contaSemTaxaFixa) / totalMedido + taxaIndividual
-          : 0;
+      let valorAgua = 0;
+      if (!row.na) {
+        valorAgua =
+          totalMedido > 0
+            ? (row.medido * contaSemTaxaFixa) / totalMedido + taxaIndividual
+            : 0;
+      }
       const totalPagar = valorAgua + row.taxaCondominioNum;
       return {
         ...row,
@@ -118,8 +154,14 @@ function Index() {
   }, [rows, contaSemTaxaFixa, taxaIndividual, taxaCondominioGlobal]);
 
   const totals = useMemo(() => {
-    const totalMedido = computedRows.reduce((sum, row) => sum + row.medido, 0);
-    const totalValorAgua = computedRows.reduce((sum, row) => sum + row.valorAgua, 0);
+    const totalMedido = computedRows.reduce(
+      (sum, row) => sum + (row.na ? 0 : row.medido),
+      0
+    );
+    const totalValorAgua = computedRows.reduce(
+      (sum, row) => sum + (row.na ? 0 : row.valorAgua),
+      0
+    );
     const totalTaxaCondominio = computedRows.reduce(
       (sum, row) => sum + row.taxaCondominioNum,
       0
@@ -129,7 +171,20 @@ function Index() {
   }, [computedRows]);
 
   function updateRow(id: string, patch: Partial<Row>) {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const next = { ...r, ...patch };
+        // Auto-detect N/A rows when both readings are N/A
+        const bothNa =
+          next.leituraAnterior.trim().toUpperCase() === "N/A" &&
+          next.leituraAtual.trim().toUpperCase() === "N/A";
+        const bothEmpty =
+          next.leituraAnterior.trim() === "" && next.leituraAtual.trim() === "";
+        next.na = bothNa || (r.na && bothEmpty);
+        return next;
+      })
+    );
   }
 
   function addRow() {
@@ -141,6 +196,7 @@ function Index() {
         leituraAnterior: "",
         leituraAtual: "",
         taxaCondominio: taxaCondominioGlobal,
+        na: false,
       },
     ]);
   }
@@ -235,7 +291,7 @@ function Index() {
               onClick={addRow}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              + Adicionar linha
+              + Adicionar unidade
             </button>
           </div>
 
@@ -251,7 +307,9 @@ function Index() {
                       <div
                         contentEditable
                         suppressContentEditableWarning
-                        onBlur={(e) => updateColumnLabel(col.id, e.currentTarget.textContent || "")}
+                        onBlur={(e) =>
+                          updateColumnLabel(col.id, e.currentTarget.textContent || "")
+                        }
                         className="min-w-[80px] outline-none"
                       >
                         {col.label}
@@ -279,7 +337,7 @@ function Index() {
                     </td>
                     <td className="border px-1 py-1">
                       <input
-                        type="number"
+                        type="text"
                         inputMode="numeric"
                         value={row.leituraAnterior}
                         onChange={(e) =>
@@ -291,7 +349,7 @@ function Index() {
                     </td>
                     <td className="border px-1 py-1">
                       <input
-                        type="number"
+                        type="text"
                         inputMode="numeric"
                         value={row.leituraAtual}
                         onChange={(e) =>
@@ -302,10 +360,10 @@ function Index() {
                       />
                     </td>
                     <td className="border px-2 py-1 text-right tabular-nums">
-                      {formatNumber(row.medido)}
+                      {row.na ? "N/A" : formatNumber(row.medido)}
                     </td>
                     <td className="border px-2 py-1 text-right tabular-nums">
-                      {formatMoney(row.valorAgua)}
+                      {row.na ? "N/A" : formatMoney(row.valorAgua)}
                     </td>
                     <td className="border px-1 py-1">
                       <input
@@ -346,7 +404,7 @@ function Index() {
                       colSpan={columns.length + 1}
                       className="border px-4 py-8 text-center text-muted-foreground"
                     >
-                      Nenhuma unidade adicionada. Clique em "Adicionar linha"
+                      Nenhuma unidade adicionada. Clique em "Adicionar unidade"
                       para começar.
                     </td>
                   </tr>
