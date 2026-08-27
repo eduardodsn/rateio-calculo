@@ -389,7 +389,11 @@ function Index() {
     });
 
     setRows((prev) =>
-      prev.map((row) => ({ ...row, leituraAnterior: row.leituraAtual }))
+      prev.map((row) => ({
+        ...row,
+        leituraAnterior: row.leituraAtual,
+        leituraAtual: "",
+      }))
     );
     setMesReferencia((prev) => addMonthsToReferencia(prev, 1));
   }
