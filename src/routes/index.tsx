@@ -47,7 +47,7 @@ const initialColumns: Column[] = [
 
 const DEFAULT_VALOR_CONTA = "R$ 1.683,44";
 const DEFAULT_TAXA_CONDOMINIO = "R$ 30,00";
-const DEFAULT_TAXA_FIXA = "R$ 22,18";
+const DEFAULT_TAXA_FIXA = "R$ 244,02";
 
 const STORAGE_KEY = "qe40-rateio:state:v1";
 const BACKUP_KEY = "qe40-rateio:backup:v1";
@@ -899,7 +899,7 @@ function Index() {
         </section>
 
         <p className="text-center text-xs text-muted-foreground">
-          OBS: a CAESB cobra uma taxa fixa por apartamento, mesmo que não tenha
+          OBS: a CAESB cobra uma valor fixo por apartamento, mesmo que não tenha
           consumo de água.
         </p>
       </div>
