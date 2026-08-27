@@ -78,8 +78,7 @@ function generateDefaultRows(taxaCondominioGlobal: string): Row[] {
   const units: string[] = [];
   for (let floor = 1; floor <= 6; floor++) {
     for (let unit = 1; unit <= 4; unit++) {
-      const suffix = floor === 6 && unit >= 2 ? undefined : `${floor}0${unit}`;
-      if (suffix) units.push(suffix);
+      units.push(`${floor}0${unit}`);
     }
   }
   units.push("Loja");
